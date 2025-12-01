@@ -1,0 +1,17 @@
+{
+  "event": "comment.added",
+  "ticket": {
+    "id": 12345,
+    "title": "Temp access to prod-app-server-01",
+    "assignee": {"email": "dev@example.com"},
+    "customFields": [
+      {"name": "server", "value": "prod-app-server-01"},
+      {"name": "duration", "value": "2h"},
+      {"name": "target", "value": "dev@example.com"}
+    ]
+  },
+  "comment": {
+    "text": "approved",
+    "author": {"email": "alice@example.com"}
+  }
+}
