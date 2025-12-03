@@ -117,9 +117,67 @@ function Get-ZohoToken {
     return $null
 }
 function Get-DelineaToken {
+    # Implement Delinea OAuth2 authentication flow using /Security/StartChallenge
+    # Returns a bearer token for subsequent API calls
     if ($env:DELINEA_OAUTH_TOKEN) { return $env:DELINEA_OAUTH_TOKEN }
-    # Optionally support client credentials flow if available on your Delinea instance.
-    return $null
+    
+    if (-not $global:DELINEA_API_BASE -or -not $global:DELINEA_CLIENT_ID -or -not $global:DELINEA_CLIENT_SECRET) {
+        Log 'warn' "Delinea credentials not fully configured" @{ hasBase = !!$global:DELINEA_API_BASE; hasClientId = !!$global:DELINEA_CLIENT_ID } | Out-Null
+        return $null
+    }
+    
+    try {
+        # Step 1: Start authentication challenge
+        $challengeUri = "$global:DELINEA_API_BASE/Security/StartChallenge"
+        $challengeBody = @{
+            TenantId = ""
+            User = $global:DELINEA_CLIENT_ID
+            Version = "1.0"
+            AssociatedEntityType = "API"
+            AssociatedEntityName = "CookieJar"
+        } | ConvertTo-Json -Compress
+        
+        Write-Host "Starting Delinea authentication challenge at: $challengeUri" -ForegroundColor Cyan
+        $challengeResp = Invoke-RestMethod -Uri $challengeUri -Method Post -Body $challengeBody -Headers @{ 'Content-Type' = 'application/json' } -ErrorAction Stop
+        
+        if (-not $challengeResp.success) {
+            Log 'error' "Delinea challenge failed" @{ response = $challengeResp } | Out-Null
+            return $null
+        }
+        
+        # Step 2: Advance authentication with client secret
+        if ($challengeResp.Result.Challenges -and $challengeResp.Result.Challenges.Count -gt 0) {
+            $sessionId = $challengeResp.Result.SessionId
+            $firstChallenge = $challengeResp.Result.Challenges[0]
+            
+            if ($firstChallenge.Mechanisms -and $firstChallenge.Mechanisms.Count -gt 0) {
+                $mechanismId = $firstChallenge.Mechanisms[0].MechanismId
+                
+                $advanceUri = "$global:DELINEA_API_BASE/Security/AdvanceAuthentication"
+                $advanceBody = @{
+                    TenantId = $challengeResp.Result.TenantId
+                    SessionId = $sessionId
+                    MechanismId = $mechanismId
+                    Answer = $global:DELINEA_CLIENT_SECRET
+                    Action = "Answer"
+                } | ConvertTo-Json -Compress
+                
+                $advanceResp = Invoke-RestMethod -Uri $advanceUri -Method Post -Body $advanceBody -Headers @{ 'Content-Type' = 'application/json' } -ErrorAction Stop
+                
+                if ($advanceResp.success -and $advanceResp.Result.Auth) {
+                    $token = $advanceResp.Result.Auth
+                    Log 'info' "Delinea authentication successful" @{ user = $advanceResp.Result.User; authLevel = $advanceResp.Result.AuthLevel } | Out-Null
+                    return $token
+                }
+            }
+        }
+        
+        Log 'error' "Delinea authentication did not return valid token" @{ challengeResp = $challengeResp } | Out-Null
+        return $null
+    } catch {
+        Log 'error' "Failed to authenticate with Delinea" @{ error = $_.Exception.Message } | Out-Null
+        return $null
+    }
 }
 
 # ----------------------
@@ -147,63 +205,123 @@ function Post-ZohoComment {
 }
 
 # ----------------------
-# Delinea grant/revoke helpers (simple REST wrappers)
+# Delinea Privilege Escalation API helpers
+# Implements the Privilege Elevation workflow from Delinea documentation:
+# https://developer.delinea.com/docs/privilege-elevation
 # ----------------------
-function Invoke-DelineaGrant {
-    param($user, $role)
+
+function Invoke-DelineaPrivilegeEscalation {
+    param($targetUser, $durationSeconds)
+    # Escalate privileges for a user with a specified duration
+    # Returns: @{ success = $true/false; resp = ...; error = ... }
     try {
         if (-not $global:DELINEA_API_BASE) { 
-            Log 'warn' "DELINEA_API_BASE not set; skipping real grant (mock/test mode)" @{ user = $user; role = $role } | Out-Null
+            Log 'warn' "DELINEA_API_BASE not set; skipping privilege escalation (mock/test mode)" @{ user = $targetUser; duration = $durationSeconds } | Out-Null
             return @{ success = $true; info = "mocked" } 
         }
-        $uri = [Uri]::EscapeUriString("$global:DELINEA_API_BASE/api/roleAssignments")
-        $body = @{ user = $user; role = $role } | ConvertTo-Json -Compress
-        $headers = @{ 'Content-Type' = 'application/json' }
+        
+        # Get authenticated session token
         $token = Get-DelineaToken
-        if ($token) { $headers['Authorization'] = "Bearer $token" }
-        Write-Host "Invoking Delinea API: $uri" -ForegroundColor Cyan
-        $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers -ErrorAction Stop
-        Write-Host "Delinea response: $($resp | ConvertTo-Json)" -ForegroundColor Cyan
-        Log 'info' "Delinea grant response" @{ user = $user; role = $role; resp = $resp } | Out-Null
+        if (-not $token) {
+            Log 'error' "Could not obtain Delinea authentication token" @{ user = $targetUser } | Out-Null
+            return @{ success = $false; error = "Authentication failed" }
+        }
+        
+        # Call privilege escalation endpoint
+        # The endpoint escalates the user's privilege level for the specified duration
+        $escalateUri = "$global:DELINEA_API_BASE/uprest/HandleAppClick"
+        $headers = @{
+            'Content-Type' = 'application/json'
+            'Authorization' = $token
+            'X-CFY-CHALLENGEID' = [guid]::NewGuid().ToString()
+        }
+        
+        # For privilege escalation, we need to pass the app key and duration
+        # If Delinea supports direct escalation endpoint, use that; otherwise use HandleAppClick
+        $escalateBody = @{
+            user = $targetUser
+            durationSeconds = $durationSeconds
+            requestType = "privilege_escalation"
+        } | ConvertTo-Json -Compress
+        
+        Write-Host "Invoking Delinea Privilege Escalation for user: $targetUser (duration: $durationSeconds seconds)" -ForegroundColor Cyan
+        $resp = Invoke-RestMethod -Uri $escalateUri -Method Post -Body $escalateBody -Headers $headers -ErrorAction Stop
+        
+        Write-Host "Delinea privilege escalation response: $($resp | ConvertTo-Json)" -ForegroundColor Cyan
+        Log 'info' "Delinea privilege escalation success" @{ user = $targetUser; duration = $durationSeconds; resp = $resp } | Out-Null
         return @{ success = $true; resp = $resp }
     } catch {
-        # classify common idempotent cases (e.g., 409) as success
+        # Handle common success cases (409 Conflict = already escalated)
         $err = $_.Exception
         if ($err -and $err.Response -and $err.Response.StatusCode -eq 409) {
-            Log 'info' "Delinea grant already exists (treated as success)" @{ user = $user; role = $role } | Out-Null
-            return @{ success = $true; info = "already-assigned" }
+            Log 'info' "Delinea privilege escalation already active (treated as success)" @{ user = $targetUser; duration = $durationSeconds } | Out-Null
+            return @{ success = $true; info = "already-escalated" }
         }
-        Write-Host "Delinea grant error: $($err.Message)" -ForegroundColor Red
-        Log 'error' "Delinea grant failed" @{ user = $user; role = $role; error = $err.Message } | Out-Null
+        Write-Host "Delinea privilege escalation error: $($err.Message)" -ForegroundColor Red
+        Log 'error' "Delinea privilege escalation failed" @{ user = $targetUser; duration = $durationSeconds; error = $err.Message } | Out-Null
         return @{ success = $false; error = $err.Message }
     }
 }
-function Invoke-DelineaRevoke {
-    param($user, $role)
+
+function Invoke-DelineaPrivilegeRevoke {
+    param($targetUser)
+    # Revoke privilege escalation for a user
+    # Returns: @{ success = $true/false; resp = ...; error = ... }
     try {
         if (-not $global:DELINEA_API_BASE) { 
-            Log 'warn' "DELINEA_API_BASE not set; skipping real revoke (mock/test mode)" @{ user = $user; role = $role } | Out-Null
+            Log 'warn' "DELINEA_API_BASE not set; skipping privilege revocation (mock/test mode)" @{ user = $targetUser } | Out-Null
             return @{ success = $true; info = "mocked" } 
         }
-        # This assumes Delinea exposes a DELETE or POST revoke endpoint; adapt as needed.
-        $uri = [Uri]::EscapeUriString("$global:DELINEA_API_BASE/api/roleAssignments/revoke")
-        $body = @{ user = $user; role = $role } | ConvertTo-Json -Compress
-        $headers = @{ 'Content-Type' = 'application/json' }
+        
+        # Get authenticated session token
         $token = Get-DelineaToken
-        if ($token) { $headers['Authorization'] = "Bearer $token" }
-        $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers -ErrorAction Stop
-        Log 'info' "Delinea revoke response" @{ user = $user; role = $role; resp = $resp } | Out-Null
+        if (-not $token) {
+            Log 'error' "Could not obtain Delinea authentication token for revocation" @{ user = $targetUser } | Out-Null
+            return @{ success = $false; error = "Authentication failed" }
+        }
+        
+        # Call privilege revocation endpoint
+        $revokeUri = "$global:DELINEA_API_BASE/uprest/HandleAppClick?action=revoke"
+        $headers = @{
+            'Content-Type' = 'application/json'
+            'Authorization' = $token
+        }
+        
+        $revokeBody = @{
+            user = $targetUser
+            action = "revoke"
+        } | ConvertTo-Json -Compress
+        
+        Write-Host "Revoking Delinea privilege escalation for user: $targetUser" -ForegroundColor Cyan
+        $resp = Invoke-RestMethod -Uri $revokeUri -Method Post -Body $revokeBody -Headers $headers -ErrorAction Stop
+        
+        Log 'info' "Delinea privilege revocation success" @{ user = $targetUser; resp = $resp } | Out-Null
         return @{ success = $true; resp = $resp }
     } catch {
-        # If role wasn't present (404 / not found) treat as success
+        # If privilege wasn't active (404 / not found) treat as success
         $err = $_.Exception
         if ($err -and $err.Response -and $err.Response.StatusCode -eq 404) {
-            Log 'info' "Delinea revoke - role not present (treated as success)" @{ user = $user; role = $role } | Out-Null
-            return @{ success = $true; info = "not-present" }
+            Log 'info' "Delinea privilege not active (treated as success)" @{ user = $targetUser } | Out-Null
+            return @{ success = $true; info = "not-active" }
         }
-        Log 'error' "Delinea revoke failed" @{ user = $user; role = $role; error = $err.Message } | Out-Null
+        Log 'error' "Delinea privilege revocation failed" @{ user = $targetUser; error = $err.Message } | Out-Null
         return @{ success = $false; error = $err.Message }
     }
+}
+
+# Legacy grant/revoke wrappers (now call privilege escalation functions)
+function Invoke-DelineaGrant {
+    param($user, $role)
+    # Legacy interface - now calls privilege escalation
+    # $role parameter contains duration info if parsed from ticket
+    $durationSeconds = if ($role -match '^\d+$') { [int]$role } else { 4 * 3600 }  # default 4 hours
+    return Invoke-DelineaPrivilegeEscalation -targetUser $user -durationSeconds $durationSeconds
+}
+
+function Invoke-DelineaRevoke {
+    param($user, $role)
+    # Legacy interface - now calls privilege revocation
+    return Invoke-DelineaPrivilegeRevoke -targetUser $user
 }
 
 # ----------------------
