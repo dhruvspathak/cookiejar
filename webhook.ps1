@@ -128,17 +128,20 @@ function Get-DelineaToken {
 function Post-ZohoComment {
     param($ticketId, $commentText)
     try {
-        if (-not $global:ZOHO_API_BASE) { Log 'warn' "ZOHO_API_BASE not configured, skipping Post-ZohoComment" @{ ticketId = $ticketId; comment = $commentText }; return $true }
+        if (-not $global:ZOHO_API_BASE) { 
+            Log 'warn' "ZOHO_API_BASE not configured, skipping Post-ZohoComment" @{ ticketId = $ticketId; comment = $commentText } | Out-Null
+            return $true 
+        }
         $uri = [Uri]::EscapeUriString("$global:ZOHO_API_BASE/sprints/v1/tickets/$ticketId/comments")
         $body = @{ text = $commentText } | ConvertTo-Json -Compress
         $headers = @{ 'Content-Type' = 'application/json' }
         $token = Get-ZohoToken
         if ($token) { $headers['Authorization'] = "Zoho-oauthtoken $token" }
         $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers -ErrorAction Stop
-        Log 'info' "Posted comment to Zoho" @{ ticketId = $ticketId; resp = $resp }
+        Log 'info' "Posted comment to Zoho" @{ ticketId = $ticketId; resp = $resp } | Out-Null
         return $true
     } catch {
-        Log 'error' "Failed to post comment to Zoho" @{ ticketId = $ticketId; error = $_.Exception.Message }
+        Log 'error' "Failed to post comment to Zoho" @{ ticketId = $ticketId; error = $_.Exception.Message } | Out-Null
         return $false
     }
 }
@@ -149,30 +152,39 @@ function Post-ZohoComment {
 function Invoke-DelineaGrant {
     param($user, $role)
     try {
-        if (-not $global:DELINEA_API_BASE) { Log 'warn' "DELINEA_API_BASE not set; skipping real grant (mock/test mode)" @{ user = $user; role = $role }; return @{ success = $true; info = "mocked" } }
-        $uri = [Uri]::EscapeUriString("$global:DELINEA_API_BASE/api/roleAssignments")  # adjust path to your Delinea API
+        if (-not $global:DELINEA_API_BASE) { 
+            Log 'warn' "DELINEA_API_BASE not set; skipping real grant (mock/test mode)" @{ user = $user; role = $role } | Out-Null
+            return @{ success = $true; info = "mocked" } 
+        }
+        $uri = [Uri]::EscapeUriString("$global:DELINEA_API_BASE/api/roleAssignments")
         $body = @{ user = $user; role = $role } | ConvertTo-Json -Compress
         $headers = @{ 'Content-Type' = 'application/json' }
         $token = Get-DelineaToken
         if ($token) { $headers['Authorization'] = "Bearer $token" }
+        Write-Host "Invoking Delinea API: $uri" -ForegroundColor Cyan
         $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers -ErrorAction Stop
-        Log 'info' "Delinea grant response" @{ user = $user; role = $role; resp = $resp }
+        Write-Host "Delinea response: $($resp | ConvertTo-Json)" -ForegroundColor Cyan
+        Log 'info' "Delinea grant response" @{ user = $user; role = $role; resp = $resp } | Out-Null
         return @{ success = $true; resp = $resp }
     } catch {
         # classify common idempotent cases (e.g., 409) as success
         $err = $_.Exception
         if ($err -and $err.Response -and $err.Response.StatusCode -eq 409) {
-            Log 'info' "Delinea grant already exists (treated as success)" @{ user = $user; role = $role }
+            Log 'info' "Delinea grant already exists (treated as success)" @{ user = $user; role = $role } | Out-Null
             return @{ success = $true; info = "already-assigned" }
         }
-        Log 'error' "Delinea grant failed" @{ user = $user; role = $role; error = $err.Message }
+        Write-Host "Delinea grant error: $($err.Message)" -ForegroundColor Red
+        Log 'error' "Delinea grant failed" @{ user = $user; role = $role; error = $err.Message } | Out-Null
         return @{ success = $false; error = $err.Message }
     }
 }
 function Invoke-DelineaRevoke {
     param($user, $role)
     try {
-        if (-not $global:DELINEA_API_BASE) { Log 'warn' "DELINEA_API_BASE not set; skipping real revoke (mock/test mode)" @{ user = $user; role = $role }; return @{ success = $true; info = "mocked" } }
+        if (-not $global:DELINEA_API_BASE) { 
+            Log 'warn' "DELINEA_API_BASE not set; skipping real revoke (mock/test mode)" @{ user = $user; role = $role } | Out-Null
+            return @{ success = $true; info = "mocked" } 
+        }
         # This assumes Delinea exposes a DELETE or POST revoke endpoint; adapt as needed.
         $uri = [Uri]::EscapeUriString("$global:DELINEA_API_BASE/api/roleAssignments/revoke")
         $body = @{ user = $user; role = $role } | ConvertTo-Json -Compress
@@ -180,16 +192,16 @@ function Invoke-DelineaRevoke {
         $token = Get-DelineaToken
         if ($token) { $headers['Authorization'] = "Bearer $token" }
         $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers -ErrorAction Stop
-        Log 'info' "Delinea revoke response" @{ user = $user; role = $role; resp = $resp }
+        Log 'info' "Delinea revoke response" @{ user = $user; role = $role; resp = $resp } | Out-Null
         return @{ success = $true; resp = $resp }
     } catch {
         # If role wasn't present (404 / not found) treat as success
         $err = $_.Exception
         if ($err -and $err.Response -and $err.Response.StatusCode -eq 404) {
-            Log 'info' "Delinea revoke - role not present (treated as success)" @{ user = $user; role = $role }
+            Log 'info' "Delinea revoke - role not present (treated as success)" @{ user = $user; role = $role } | Out-Null
             return @{ success = $true; info = "not-present" }
         }
-        Log 'error' "Delinea revoke failed" @{ user = $user; role = $role; error = $err.Message }
+        Log 'error' "Delinea revoke failed" @{ user = $user; role = $role; error = $err.Message } | Out-Null
         return @{ success = $false; error = $err.Message }
     }
 }
@@ -209,9 +221,14 @@ function Extract-ChangeReleaseFields {
         workitemId = $null
     }
     if ($ticket) {
-        if ($ticket -is [System.Collections.IDictionary] -and $ticket.ContainsKey('id')) { 
-            $res.workitemId = $ticket.id 
+        # Handle both hashtable and PSCustomObject from JSON conversion
+        $ticketId = $null
+        if ($ticket -is [System.Collections.IDictionary]) {
+            $ticketId = $ticket['id']
+        } elseif ($ticket.PSObject.Properties.Name -contains 'id') {
+            $ticketId = $ticket.id
         }
+        if ($ticketId) { $res.workitemId = $ticketId }
         # customFields may be array of {name, value} objects
         if ($ticket.customFields -and $ticket.customFields.Count -gt 0) {
             foreach ($f in $ticket.customFields) {
@@ -285,28 +302,31 @@ function Handle-GrantAccess {
     $workitemId = $fields.workitemId
     $target = if ($fields.targetUser) { $fields.targetUser } else { $fields.assigneeEmail }
     if (-not $target) {
-        Log 'error' "No target user found for grant" @{ workitemId = $workitemId; fields = $fields }
-        Post-ZohoComment -ticketId $workitemId -commentText "Grant failed: could not determine target user."
+        Log 'error' "No target user found for grant" @{ workitemId = $workitemId; fields = $fields } | Out-Null
+        Post-ZohoComment -ticketId $workitemId -commentText "Grant failed: could not determine target user." | Out-Null
         return
     }
     $role = Get-RoleForServer -server $fields.server
     if (-not $role) {
-        Log 'error' "No role mapping found for server" @{ server = $fields.server; workitemId = $workitemId }
-        Post-ZohoComment -ticketId $workitemId -commentText "Grant failed: could not map server '$($fields.server)' to a role."
+        Log 'error' "No role mapping found for server" @{ server = $fields.server; workitemId = $workitemId } | Out-Null
+        Post-ZohoComment -ticketId $workitemId -commentText "Grant failed: could not map server '$($fields.server)' to a role." | Out-Null
         return
     }
     # idempotency check: if active grant exists for same workitem/user/role skip actual grant
     $existing = Find-ActiveGrant -workitemId $workitemId -user $target -role $role
     if ($existing) {
-        Log 'info' "Active grant already exists; skipping grant" @{ workitemId = $workitemId; user = $target; role = $role }
+        Log 'info' "Active grant already exists; skipping grant" @{ workitemId = $workitemId; user = $target; role = $role } | Out-Null
         Post-ZohoComment -ticketId $workitemId -commentText "Grant already exists for $target on role $role (idempotent). Expires: $($existing.expiresAt)"
         return
     }
 
     # Perform grant via Delinea API
+    Write-Host "Calling Invoke-DelineaGrant for user=$target, role=$role" -ForegroundColor Cyan
     $grantResp = Invoke-DelineaGrant -user $target -role $role
-    if (-not $grantResp.success) {
-        $msg = "Grant failed for $target -> $role`: $($grantResp.error)"
+    Write-Host "Grant response type: $($grantResp.GetType().Name), value: $($grantResp | ConvertTo-Json)" -ForegroundColor Cyan
+    if ($null -eq $grantResp -or -not $grantResp.success) {
+        $errMsg = if ($null -eq $grantResp) { "Grant call failed (null response)" } else { $grantResp.error }
+        $msg = "Grant failed for $target -> $role`: $errMsg"
         Post-ZohoComment -ticketId $workitemId -commentText $msg
         return
     }
@@ -323,8 +343,8 @@ function Handle-GrantAccess {
     }
     Append-GrantRecord $rec
 
-    Log 'info' "Access granted and persisted" @{ workitemId = $workitemId; user = $target; role = $role; expiresAt = $expiresAt }
-    Post-ZohoComment -ticketId $workitemId -commentText "Access GRANTED to $target on server $($fields.server) (role: $role). Expires at $expiresAt (UTC). Granted by approval comment: '$($comment.text)'."
+    Log 'info' "Access granted and persisted" @{ workitemId = $workitemId; user = $target; role = $role; expiresAt = $expiresAt } | Out-Null
+    Post-ZohoComment -ticketId $workitemId -commentText "Access GRANTED to $target on server $($fields.server) (role: $role). Expires at $expiresAt (UTC). Granted by approval comment: '$($comment.text)'." | Out-Null
 }
 
 function Handle-Revoke {
@@ -333,14 +353,14 @@ function Handle-Revoke {
     $workitemId = $fields.workitemId
     $target = if ($fields.targetUser) { $fields.targetUser } else { $fields.assigneeEmail }
     if (-not $target) {
-        Log 'error' "No target user found for revoke" @{ workitemId = $workitemId; fields = $fields }
-        Post-ZohoComment -ticketId $workitemId -commentText "Revoke failed: could not determine target user."
+        Log 'error' "No target user found for revoke" @{ workitemId = $workitemId; fields = $fields } | Out-Null
+        Post-ZohoComment -ticketId $workitemId -commentText "Revoke failed: could not determine target user." | Out-Null
         return
     }
     $role = Get-RoleForServer -server $fields.server
     if (-not $role) {
-        Log 'error' "No role mapping found for server during revoke" @{ server = $fields.server; workitemId = $workitemId }
-        Post-ZohoComment -ticketId $workitemId -commentText "Revoke failed: could not map server '$($fields.server)' to a role."
+        Log 'error' "No role mapping found for server during revoke" @{ server = $fields.server; workitemId = $workitemId } | Out-Null
+        Post-ZohoComment -ticketId $workitemId -commentText "Revoke failed: could not map server '$($fields.server)' to a role." | Out-Null
         return
     }
 
@@ -348,14 +368,14 @@ function Handle-Revoke {
     $revokeResp = Invoke-DelineaRevoke -user $target -role $role
     if (-not $revokeResp.success) {
         $msg = "Revoke failed for $target -> $role`: $($revokeResp.error)"
-        Post-ZohoComment -ticketId $workitemId -commentText $msg
+        Post-ZohoComment -ticketId $workitemId -commentText $msg | Out-Null
         return
     }
 
     $revokedAt = (Get-Date).ToUniversalTime().ToString("o")
     Mark-GrantRevoked -workitemId $workitemId -user $target -role $role -revokedAt $revokedAt -reason "workitem-closed"
-    Log 'info' "Access revoked" @{ workitemId = $workitemId; user = $target; role = $role; revokedAt = $revokedAt }
-    Post-ZohoComment -ticketId $workitemId -commentText "Access REVOKED for $target on server $($fields.server) (role: $role). Revoked at $revokedAt (UTC)."
+    Log 'info' "Access revoked" @{ workitemId = $workitemId; user = $target; role = $role; revokedAt = $revokedAt } | Out-Null
+    Post-ZohoComment -ticketId $workitemId -commentText "Access REVOKED for $target on server $($fields.server) (role: $role). Revoked at $revokedAt (UTC)." | Out-Null
 }
 
 # ----------------------
@@ -449,6 +469,117 @@ function Start-Listener {
         try { Import-Module ThreadJob -ErrorAction Stop; $useThreadJob = $true } catch { $useThreadJob = $false }
     }
 
+    # Define handler script once, outside the loop
+    $handlerScript = {
+        param($requestObj, $globalVars)
+        # Handler script - runs in same process (inline) or ThreadJob context
+        # All functions are accessible via module context in ThreadJob, or directly in inline
+        try {
+            $headers = $requestObj.Headers
+            $body = $requestObj.Body
+            # HMAC validation
+            $sigHeader = $null
+            if ($headers.ContainsKey('X-Zoho-Signature')) { $sigHeader = $headers['X-Zoho-Signature'] } elseif ($headers.ContainsKey('x-zoho-signature')) { $sigHeader = $headers['x-zoho-signature'] }
+            $hmacRequired = [bool]$globalVars.HMAC_REQUIRED
+            $hmacSecret = $globalVars.HMAC_SECRET
+            
+            if ($hmacRequired -and -not $sigHeader) {
+                Write-Host "HMAC validation failed: Missing signature" -ForegroundColor Yellow
+                return @{ status = 401; body = "Missing signature" }
+            }
+            if ($sigHeader -and $hmacSecret) {
+                # Call New-ZohoSignature - this works in same-process inline and ThreadJob
+                $computed = New-ZohoSignature -body $body -secret $hmacSecret
+                if ($computed -ne $sigHeader) {
+                    if ($hmacRequired) {
+                        Write-Host "HMAC validation failed: Invalid signature" -ForegroundColor Yellow
+                        return @{ status = 401; body = "Invalid signature" }
+                    } else {
+                        Write-Host "HMAC validation: Signature mismatch but HMAC_REQUIRED=false, continuing" -ForegroundColor Yellow
+                    }
+                }
+            }
+
+            # parse JSON
+            $payload = $null
+            try { $payload = $body | ConvertFrom-Json -ErrorAction Stop } catch { $payload = $null }
+            if (-not $payload) {
+                Write-Host "Invalid JSON or empty body" -ForegroundColor Yellow
+                return @{ status = 400; body = "Bad JSON" }
+            }
+
+            # Decision logic: event types - 'comment.added' or workitem status change
+            $evt = $payload.event
+            Write-Host "Received event: $evt" -ForegroundColor Cyan
+
+            if ($evt -eq 'comment.added') {
+                # get last comment payload (support payload.comment or payload.comments array)
+                $comment = $payload.comment
+                if (-not $comment -and $payload.comments) { $comment = $payload.comments[-1] }
+                if (-not $comment) { 
+                    Write-Host "No comment object found" -ForegroundColor Yellow
+                    return @{ status = 200; body = "ignored" } 
+                }
+
+                $text = ($comment.text -as [string])
+                if (-not $text) { $text = '' }
+                
+                $authorEmail = ($comment.author.email -as [string])
+                if (-not $authorEmail) { $authorEmail = ($comment.author.userEmail -as [string]) }
+                if (-not $authorEmail) { $authorEmail = '' }
+                # approval detection using regex
+                $approvalRegex = $globalVars.APPROVAL_REGEX
+                if ($approvalRegex) {
+                    $regex = [regex]::new($approvalRegex, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                    $isApproval = $regex.IsMatch($text)
+                } else {
+                    $isApproval = $false
+                }
+                $isApprover = $false
+                if ($authorEmail -and $globalVars.SENIOR_APPROVERS) {
+                    $isApprover = $globalVars.SENIOR_APPROVERS -contains $authorEmail.ToLower()
+                }
+                Write-Host "Comment: approval=$isApproval, approver=$isApprover, author=$authorEmail" -ForegroundColor Cyan
+
+                if ($isApproval -and $isApprover) {
+                    try {
+                        Handle-GrantAccess -ticket $payload.ticket -comment $comment
+                        Write-Host "Grant access processed successfully" -ForegroundColor Green
+                    } catch {
+                        Write-Host "Grant access error: $($_.Exception.Message)" -ForegroundColor Red
+                        throw
+                    }
+                } else {
+                    Write-Host "Comment not an approval or author not approver; ignoring" -ForegroundColor Yellow
+                }
+
+                return @{ status = 200; body = "ok" }
+            } elseif ($evt -eq 'workitem.updated' -or $evt -eq 'ticket.updated' -or $evt -eq 'workitem.state_changed') {
+                # if the workitem status is in closed states, trigger revoke
+                $status = $payload.ticket.status -as [string]
+                $closedStates = @('Done','Closed','Completed','Resolved')
+                if ($status -and $closedStates -contains $status) {
+                    try {
+                        Handle-Revoke -ticket $payload.ticket
+                        Write-Host "Revoke processed successfully" -ForegroundColor Green
+                    } catch {
+                        Write-Host "Revoke error: $($_.Exception.Message)" -ForegroundColor Red
+                        throw
+                    }
+                } else {
+                    Write-Host "Workitem updated but not closing; ignoring" -ForegroundColor Yellow
+                }
+                return @{ status = 200; body = "ok" }
+            } else {
+                Write-Host "Unhandled event type: $evt" -ForegroundColor Yellow
+                return @{ status = 200; body = "ignored" }
+            }
+        } catch {
+            Write-Host "Handler error: $($_.Exception.Message)" -ForegroundColor Red
+            return @{ status = 500; body = "handler-error" }
+        }
+    }
+
     while ($listener.IsListening) {
         try {
             $ctx = $listener.GetContext()
@@ -472,95 +603,6 @@ function Start-Listener {
                 Body = $body
             }
 
-            $handlerScript = {
-                param($requestObj, $globalVars, $logFunc, $newSigFunc, $handleGrantFunc, $handleRevokeFunc)
-                # Handler script receives all dependencies as parameters
-                try {
-                    $headers = $requestObj.Headers
-                    $body = $requestObj.Body
-                    # HMAC validation
-                    $sigHeader = $null
-                    if ($headers.ContainsKey('X-Zoho-Signature')) { $sigHeader = $headers['X-Zoho-Signature'] } elseif ($headers.ContainsKey('x-zoho-signature')) { $sigHeader = $headers['x-zoho-signature'] }
-                    $hmacRequired = [bool]$globalVars.HMAC_REQUIRED
-                    $hmacSecret = $globalVars.HMAC_SECRET
-                    
-                    if ($hmacRequired -and -not $sigHeader) {
-                        & $logFunc 'warn' "Missing HMAC signature; rejecting" @{ remote = $requestObj.RemoteEndPoint }
-                        return @{ status = 401; body = "Missing signature" }
-                    }
-                    if ($sigHeader -and $hmacSecret) {
-                        $computed = & $newSigFunc -body $body -secret $hmacSecret
-                        if ($computed -ne $sigHeader) {
-                            if ($hmacRequired) {
-                                & $logFunc 'warn' "Invalid HMAC signature; rejecting" @{ remote = $requestObj.RemoteEndPoint }
-                                return @{ status = 401; body = "Invalid signature" }
-                            } else {
-                                & $logFunc 'warn' "Invalid HMAC signature but HMAC_REQUIRED is false; continuing (dev mode)" @{ remote = $requestObj.RemoteEndPoint }
-                            }
-                        }
-                    }
-
-                    # parse JSON
-                    $payload = $null
-                    try { $payload = $body | ConvertFrom-Json -ErrorAction Stop } catch { $payload = $null }
-                    if (-not $payload) {
-                        & $logFunc 'warn' "Received non-JSON or empty body; ignoring" @{ remote = $requestObj.RemoteEndPoint; bodyPreview = ($body.Substring(0,[math]::Min($body.Length,200)) ) }
-                        return @{ status = 400; body = "Bad JSON" }
-                    }
-
-                    # Decision logic: event types - 'comment.added' or workitem status change
-                    $evt = $payload.event
-                    & $logFunc 'info' "Received webhook event" @{ event = $evt; workitemId = ($payload.ticket.id -as [string]) }
-
-                    if ($evt -eq 'comment.added') {
-                        # get last comment payload (support payload.comment or payload.comments array)
-                        $comment = $payload.comment
-                        if (-not $comment -and $payload.comments) { $comment = $payload.comments[-1] }
-                        if (-not $comment) { & $logFunc 'warn' "comment.added event with no comment object" @{ payload = $payload }; return @{ status = 200; body = "ignored" } }
-
-                        $text = ($comment.text -as [string]) -or ''
-                        $authorEmail = ($comment.author.email -as [string]) -or ($comment.author.userEmail -as [string]) -or ''
-                        # approval detection using regex
-                        $approvalRegex = $globalVars.APPROVAL_REGEX
-                        if ($approvalRegex) {
-                            $regex = [regex]::new($approvalRegex, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                            $isApproval = $regex.IsMatch($text)
-                        } else {
-                            $isApproval = $false
-                        }
-                        $isApprover = $false
-                        if ($authorEmail -and $globalVars.SENIOR_APPROVERS) {
-                            $isApprover = $globalVars.SENIOR_APPROVERS -contains $authorEmail.ToLower()
-                        }
-                        & $logFunc 'info' "Comment details" @{ text = $text; author = $authorEmail; isApproval = $isApproval; isApprover = $isApprover }
-
-                        if ($isApproval -and $isApprover) {
-                            & $handleGrantFunc -ticket $payload.ticket -comment $comment
-                        } else {
-                            & $logFunc 'info' "Comment not an approval or author not approver; ignoring." @{ text = $text; author = $authorEmail }
-                        }
-
-                        return @{ status = 200; body = "ok" }
-                    } elseif ($evt -eq 'workitem.updated' -or $evt -eq 'ticket.updated' -or $evt -eq 'workitem.state_changed') {
-                        # if the workitem status is in closed states, trigger revoke
-                        $status = $payload.ticket.status -as [string]
-                        $closedStates = @('Done','Closed','Completed','Resolved')
-                        if ($status -and $closedStates -contains $status) {
-                            & $handleRevokeFunc -ticket $payload.ticket
-                        } else {
-                            & $logFunc 'info' "Workitem updated but not a closing state; ignoring" @{ status = $status }
-                        }
-                        return @{ status = 200; body = "ok" }
-                    } else {
-                        & $logFunc 'info' "Unhandled event type" @{ event = $evt }
-                        return @{ status = 200; body = "ignored" }
-                    }
-                } catch {
-                    & $logFunc 'error' "Handler exception" $_.Exception.Message
-                    return @{ status = 500; body = "handler-error" }
-                }
-            }
-
             # Create globals object to pass to handler
             $globalVars = [PSCustomObject]@{
                 HMAC_REQUIRED = $global:HMAC_REQUIRED
@@ -571,8 +613,8 @@ function Start-Listener {
 
             # Dispatch: either background threadjob or handle inline (safe)
             if ($useThreadJob) {
-                # ThreadJob shares process memory so we can pass delegates
-                Start-ThreadJob -ArgumentList $requestObj, $globalVars, (Get-Item -Path Function:Log), (Get-Item -Path Function:New-ZohoSignature), (Get-Item -Path Function:Handle-GrantAccess), (Get-Item -Path Function:Handle-Revoke) -ScriptBlock $handlerScript | Out-Null
+                # ThreadJob shares process memory so functions are accessible
+                Start-ThreadJob -ArgumentList $requestObj, $globalVars -ScriptBlock $handlerScript | Out-Null
                 # Respond quickly to the client that request is accepted
                 $responseBody = "accepted"
                 $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseBody)
@@ -582,8 +624,8 @@ function Start-Listener {
                 $ctx.Response.StatusCode = 202
                 $ctx.Response.OutputStream.Close()
             } else {
-                # Inline handling (process synchronously) - pass all functions as parameters
-                $result = & $handlerScript $requestObj $globalVars ${Function:Log} ${Function:New-ZohoSignature} ${Function:Handle-GrantAccess} ${Function:Handle-Revoke}
+                # Inline handling (process synchronously)
+                $result = & $handlerScript $requestObj $globalVars
                 $respBody = $result.body
                 $status = if ($result.status) { $result.status } else { 200 }
                 $bytes = [System.Text.Encoding]::UTF8.GetBytes($respBody)

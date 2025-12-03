@@ -4,7 +4,7 @@ Write-Host "Creating .env file for local testing..." -ForegroundColor Green
 
 $envContent = @"
 # Local test configuration
-PORT=8090
+PORT=9090
 HMAC_SECRET=local_test_secret
 HMAC_REQUIRED=true
 
