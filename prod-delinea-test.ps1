@@ -27,110 +27,91 @@ else {
 }
 
 Write-Host ""
-Write-Host "2. Testing Delinea Connectivity:" -ForegroundColor Yellow
+Write-Host "3. Testing OAuth2 (client_credentials) with Production Delinea:" -ForegroundColor Yellow
 
 $delineaBase = $env_vars['DELINEA_API_BASE']
 $clientId = $env_vars['DELINEA_CLIENT_ID']
 $clientSecret = $env_vars['DELINEA_CLIENT_SECRET']
 
-# Test if Delinea API is reachable
 try {
-    Write-Host "   Testing connection to: $delineaBase" -ForegroundColor Gray
+    $tokenUri = "$($delineaBase.TrimEnd('/'))/identity/api/oauth2/token/xpmplatform"
+    Write-Host "   POST $tokenUri" -ForegroundColor Gray
     
-    # Try to reach the Delinea API
-    $testUri = "$delineaBase/Security/StartChallenge"
-    Write-Host "   POST $testUri" -ForegroundColor Gray
+    $tokenBody = @{
+        grant_type    = 'client_credentials'
+        client_id     = $clientId
+        client_secret = $clientSecret
+        scope         = 'xpmheadless'
+    }
     
-    $challengeBody = @{
-        TenantId = ""
-        User = $clientId
-        Version = "1.0"
-        AssociatedEntityType = "API"
-        AssociatedEntityName = "CookieJar-Test"
-    } | ConvertTo-Json -Compress
+    Write-Host "   Requesting access token..." -ForegroundColor Gray
+    Write-Host "   Request body: " -ForegroundColor Gray
+    foreach ($k in $tokenBody.Keys) {
+        $val = if ($k -eq 'client_secret') { '[REDACTED]' } else { $tokenBody[$k] }
+        Write-Host "     $k = $val" -ForegroundColor Gray
+    }
     
-    Write-Host ""
-    Write-Host "3. Attempting OAuth2 Authentication with Production Delinea:" -ForegroundColor Yellow
-    Write-Host "   Sending /Security/StartChallenge..." -ForegroundColor Gray
-    
-    $challengeResp = Invoke-RestMethod -Uri $testUri -Method Post -Body $challengeBody `
-        -Headers @{ 'Content-Type' = 'application/json' } `
+    $tokenResp = Invoke-RestMethod -Uri $tokenUri -Method Post -Body $tokenBody `
+        -ContentType 'application/x-www-form-urlencoded' `
         -ErrorAction Stop -TimeoutSec 15
     
-    if ($challengeResp.success) {
-        Write-Host "   OK Challenge received from Delinea" -ForegroundColor Green
-        Write-Host "   OK SessionId: $($challengeResp.Result.SessionId.Substring(0, 20))..." -ForegroundColor Green
-        Write-Host "   OK TenantId: $($challengeResp.Result.TenantId)" -ForegroundColor Green
+    if ($tokenResp.access_token) {
+        Write-Host "   OK OAuth2 authentication SUCCESSFUL" -ForegroundColor Green
+        $token = $tokenResp.access_token
+        Write-Host "   OK Access Token: $($token.Substring(0, 30))..." -ForegroundColor Green
+        Write-Host "   OK Token Type: $($tokenResp.token_type)" -ForegroundColor Green
+        Write-Host "   OK Expires In: $($tokenResp.expires_in) seconds" -ForegroundColor Green
+        Write-Host "   OK Scope: $($tokenResp.scope)" -ForegroundColor Green
         
-        # Now advance authentication
         Write-Host ""
-        Write-Host "   Sending /Security/AdvanceAuthentication..." -ForegroundColor Gray
-        
-        $sessionId = $challengeResp.Result.SessionId
-        $tenantId = $challengeResp.Result.TenantId
-        $mechanismId = $challengeResp.Result.Challenges[0].Mechanisms[0].MechanismId
-        
-        $advanceUri = "$delineaBase/Security/AdvanceAuthentication"
-        $advanceBody = @{
-            TenantId = $tenantId
-            SessionId = $sessionId
-            MechanismId = $mechanismId
-            Answer = $clientSecret
-            Action = "Answer"
-        } | ConvertTo-Json -Compress
-        
-        $advanceResp = Invoke-RestMethod -Uri $advanceUri -Method Post -Body $advanceBody `
-            -Headers @{ 'Content-Type' = 'application/json' } `
-            -ErrorAction Stop -TimeoutSec 15
-        
-        if (($advanceResp.success) -and ($advanceResp.Result.Auth)) {
-            $token = $advanceResp.Result.Auth
-            Write-Host "   OK Authentication SUCCESSFUL" -ForegroundColor Green
-            Write-Host "   OK Bearer Token: $($token.Substring(0, 30))..." -ForegroundColor Green
-            Write-Host "   OK User: $($advanceResp.Result.User)" -ForegroundColor Green
-            Write-Host "   OK AuthLevel: $($advanceResp.Result.AuthLevel)" -ForegroundColor Green
-            
-            Write-Host ""
-            Write-Host "4. Configuration Summary:" -ForegroundColor Yellow
-            Write-Host "   OK Production Delinea is reachable" -ForegroundColor Green
-            Write-Host "   OK Credentials are valid" -ForegroundColor Green
-            Write-Host "   OK OAuth2 authentication working" -ForegroundColor Green
-            Write-Host ""
-            Write-Host "   Ready to run: powershell -File .\run-full-test.ps1" -ForegroundColor Green
-        }
-        else {
-            Write-Host "   FAILED Authentication failed" -ForegroundColor Red
-            Write-Host "   Response: $($advanceResp | ConvertTo-Json)" -ForegroundColor Red
-        }
+        Write-Host "4. Configuration Summary:" -ForegroundColor Yellow
+        Write-Host "   OK Production Delinea is reachable" -ForegroundColor Green
+        Write-Host "   OK Credentials are valid" -ForegroundColor Green
+        Write-Host "   OK OAuth2 (client_credentials) authentication working" -ForegroundColor Green
+        Write-Host "   OK Ready to deploy to production" -ForegroundColor Green
     }
     else {
-        Write-Host "   FAILED Challenge failed" -ForegroundColor Red
-        Write-Host "   Response: $($challengeResp | ConvertTo-Json)" -ForegroundColor Red
+        Write-Host "   FAILED OAuth2 response missing access_token" -ForegroundColor Red
+        Write-Host "   Response: $($tokenResp | ConvertTo-Json)" -ForegroundColor Red
     }
 }
 catch {
-    Write-Host "   FAILED Error during authentication test" -ForegroundColor Red
+    Write-Host "   FAILED Error during OAuth2 authentication test" -ForegroundColor Red
     $errorMsg = $_.Exception.Message
     Write-Host "   Error: $errorMsg" -ForegroundColor Red
     
+    # Try to extract response body for more details
+    if ($_.Exception.Response) {
+        try {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $responseBody = $reader.ReadToEnd()
+            $reader.Close()
+            Write-Host "   Response Body: $responseBody" -ForegroundColor Red
+        } catch {
+            Write-Host "   Could not read response body" -ForegroundColor Yellow
+        }
+    }
+    
     # Provide more specific troubleshooting info
-    if ($errorMsg -like "*404*") {
+    if ($errorMsg -like "*400*") {
         Write-Host ""
-        Write-Host "   NOTE: 404 Not Found suggests incorrect API endpoint path" -ForegroundColor Yellow
-        Write-Host "   Possible issues:" -ForegroundColor Yellow
-        Write-Host "   - The endpoint path might have changed in your Delinea version" -ForegroundColor Yellow
-        Write-Host "   - Check your Delinea API documentation for correct authentication endpoints" -ForegroundColor Yellow
-        Write-Host "   - Try using: /uprest/Security/StartChallenge instead" -ForegroundColor Yellow
+        Write-Host "   NOTE: 400 Bad Request - request format issue" -ForegroundColor Yellow
+        Write-Host "   Possible causes:" -ForegroundColor Yellow
+        Write-Host "   - OAuth2 endpoint path might be different" -ForegroundColor Yellow
+        Write-Host "   - Request body format might be incorrect" -ForegroundColor Yellow
+        Write-Host "   - scope or grant_type values might be wrong for your tenant" -ForegroundColor Yellow
     }
     
     Write-Host ""
     Write-Host "   Troubleshooting:" -ForegroundColor Yellow
     Write-Host "   1. Verify DELINEA_API_BASE is correct: $delineaBase" -ForegroundColor Yellow
-    Write-Host "   2. Check network connectivity (firewall/proxy)" -ForegroundColor Yellow
-    Write-Host "   3. Verify credentials: $clientId" -ForegroundColor Yellow
-    Write-Host "   4. Check Delinea API documentation for correct endpoint paths" -ForegroundColor Yellow
+    Write-Host "   2. Verify OAuth2 endpoint: $tokenUri" -ForegroundColor Yellow
+    Write-Host "   3. Check credentials: $clientId" -ForegroundColor Yellow
+    Write-Host "   4. Verify network connectivity (firewall/proxy)" -ForegroundColor Yellow
+    Write-Host "   5. Check Delinea documentation for correct OAuth2 endpoint" -ForegroundColor Yellow
+    Write-Host "   6. Verify grant_type and scope values are correct" -ForegroundColor Yellow
     if ($_.Exception.Response) {
-        Write-Host "   5. HTTP Status: $($_.Exception.Response.StatusCode)" -ForegroundColor Red
+        Write-Host "   7. HTTP Status: $($_.Exception.Response.StatusCode)" -ForegroundColor Red
     }
 }
 

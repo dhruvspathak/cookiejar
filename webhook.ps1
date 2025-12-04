@@ -110,66 +110,74 @@ function Get-ZohoToken {
     return $null
 }
 function Get-DelineaToken {
-    # Implement Delinea OAuth2 authentication flow using /Security/StartChallenge
-    # Returns a bearer token for subsequent API calls
-    if ($env:DELINEA_OAUTH_TOKEN) { return $env:DELINEA_OAUTH_TOKEN }
-    
+    <#
+        Returns an Authorization header value: "Bearer <access_token>"
+
+        Env / globals expected:
+        - $global:DELINEA_API_BASE      # e.g. https://mytenant.delinea.app
+        - $global:DELINEA_CLIENT_ID
+        - $global:DELINEA_CLIENT_SECRET
+
+        Optional:
+        - $env:DELINEA_OAUTH_TOKEN  # cache token for this process if you want
+    #>
+
+    # Use cached token if one is already set (and you are ok ignoring expiry here)
+    if ($env:DELINEA_OAUTH_TOKEN) {
+        return "Bearer $($env:DELINEA_OAUTH_TOKEN)"
+    }
+
     if (-not $global:DELINEA_API_BASE -or -not $global:DELINEA_CLIENT_ID -or -not $global:DELINEA_CLIENT_SECRET) {
-        Log 'warn' "Delinea credentials not fully configured" @{ hasBase = !!$global:DELINEA_API_BASE; hasClientId = !!$global:DELINEA_CLIENT_ID } | Out-Null
+        Log 'warn' "Delinea credentials not fully configured" @{
+            hasApiBase   = [bool]$global:DELINEA_API_BASE
+            hasClientId  = [bool]$global:DELINEA_CLIENT_ID
+            hasClientSec = [bool]$global:DELINEA_CLIENT_SECRET
+        } | Out-Null
         return $null
     }
-    
+
     try {
-        # Step 1: Start authentication challenge
-        $challengeUri = "$global:DELINEA_API_BASE/Security/StartChallenge"
-        $challengeBody = @{
-            TenantId             = ""
-            User                 = $global:DELINEA_CLIENT_ID
-            Version              = "1.0"
-            AssociatedEntityType = "API"
-            AssociatedEntityName = "CookieJar"
-        } | ConvertTo-Json -Compress
-        
-        Write-Host "Starting Delinea authentication challenge at: $challengeUri" -ForegroundColor Cyan
-        $challengeResp = Invoke-RestMethod -Uri $challengeUri -Method Post -Body $challengeBody -Headers @{ 'Content-Type' = 'application/json' } -ErrorAction Stop
-        
-        if (-not $challengeResp.success) {
-            Log 'error' "Delinea challenge failed" @{ response = $challengeResp } | Out-Null
+        $tokenUri = "$($global:DELINEA_API_BASE.TrimEnd('/'))/identity/api/oauth2/token/xpmplatform"
+
+        # client_credentials grant for headless integration
+        $body = @{
+            grant_type    = 'client_credentials'
+            client_id     = $global:DELINEA_CLIENT_ID
+            client_secret = $global:DELINEA_CLIENT_SECRET
+            scope         = 'xpmheadless'
+        }
+
+        Write-Host "Requesting Delinea OAuth2 token from $tokenUri" -ForegroundColor Cyan
+
+        $resp = Invoke-RestMethod -Uri $tokenUri `
+                                  -Method Post `
+                                  -Body $body `
+                                  -ContentType 'application/x-www-form-urlencoded' `
+                                  -ErrorAction Stop
+
+        if (-not $resp.access_token) {
+            Log 'error' "Delinea token response did not contain access_token" @{
+                raw = $resp
+            } | Out-Null
             return $null
         }
-        
-        # Step 2: Advance authentication with client secret
-        if ($challengeResp.Result.Challenges -and $challengeResp.Result.Challenges.Count -gt 0) {
-            $sessionId = $challengeResp.Result.SessionId
-            $firstChallenge = $challengeResp.Result.Challenges[0]
-            
-            if ($firstChallenge.Mechanisms -and $firstChallenge.Mechanisms.Count -gt 0) {
-                $mechanismId = $firstChallenge.Mechanisms[0].MechanismId
-                
-                $advanceUri = "$global:DELINEA_API_BASE/Security/AdvanceAuthentication"
-                $advanceBody = @{
-                    TenantId    = $challengeResp.Result.TenantId
-                    SessionId   = $sessionId
-                    MechanismId = $mechanismId
-                    Answer      = $global:DELINEA_CLIENT_SECRET
-                    Action      = "Answer"
-                } | ConvertTo-Json -Compress
-                
-                $advanceResp = Invoke-RestMethod -Uri $advanceUri -Method Post -Body $advanceBody -Headers @{ 'Content-Type' = 'application/json' } -ErrorAction Stop
-                
-                if ($advanceResp.success -and $advanceResp.Result.Auth) {
-                    $token = $advanceResp.Result.Auth
-                    Log 'info' "Delinea authentication successful" @{ user = $advanceResp.Result.User; authLevel = $advanceResp.Result.AuthLevel } | Out-Null
-                    return $token
-                }
-            }
-        }
-        
-        Log 'error' "Delinea authentication did not return valid token" @{ challengeResp = $challengeResp } | Out-Null
-        return $null
+
+        $token = $resp.access_token
+
+        # Optional: cache within this PowerShell process
+        $env:DELINEA_OAUTH_TOKEN = $token
+
+        Log 'info' "Delinea OAuth2 token obtained successfully" @{
+            expires_in = $resp.expires_in
+            scope      = $resp.scope
+        } | Out-Null
+
+        return "Bearer $token"
     }
     catch {
-        Log 'error' "Failed to authenticate with Delinea" @{ error = $_.Exception.Message } | Out-Null
+        $msg = $_.Exception.Message
+        Write-Host "Failed to authenticate with Delinea OAuth2: $msg" -ForegroundColor Red
+        Log 'error' "Failed to authenticate with Delinea OAuth2" @{ error = $msg } | Out-Null
         return $null
     }
 }
@@ -206,55 +214,97 @@ function Post-ZohoComment {
 # ----------------------
 
 function Invoke-DelineaPrivilegeEscalation {
-    param($targetUser, $durationSeconds)
-    # Escalate privileges for a user with a specified duration
-    # Returns: @{ success = $true/false; resp = ...; error = ... }
+    param(
+        [string]$targetUser,
+        [int]   $durationSeconds
+    )
+    <#
+        Grants privilege elevation for a user via PrivilegeElevationCommand/AddAssignment.
+        
+        Returns: @{ success = $true/false; resp = ...; error = ... }
+        
+        NOTE: The exact JSON schema for AddAssignment varies by Delinea version.
+        You must populate the $assignment hashtable with the correct field names
+        (CommandId, PrincipalName, ScopeId, etc.) based on your tenant's API explorer.
+    #>
+
     try {
-        if (-not $global:DELINEA_API_BASE) { 
-            Log 'warn' "DELINEA_API_BASE not set; skipping privilege escalation (mock/test mode)" @{ user = $targetUser; duration = $durationSeconds } | Out-Null
-            return @{ success = $true; info = "mocked" } 
+        if (-not $global:DELINEA_API_BASE) {
+            Log 'warn' "DELINEA_API_BASE not set; skipping privilege escalation (mock mode)" @{
+                user     = $targetUser
+                duration = $durationSeconds
+            } | Out-Null
+            return @{ success = $true; info = 'mocked' }
         }
-        
-        # Get authenticated session token
-        $token = Get-DelineaToken
-        if (-not $token) {
+
+        $authHeader = Get-DelineaToken
+        if (-not $authHeader) {
             Log 'error' "Could not obtain Delinea authentication token" @{ user = $targetUser } | Out-Null
-            return @{ success = $false; error = "Authentication failed" }
+            return @{ success = $false; error = 'Authentication failed' }
         }
-        
-        # Call privilege escalation endpoint
-        # The endpoint escalates the user's privilege level for the specified duration
-        $escalateUri = "$global:DELINEA_API_BASE/uprest/HandleAppClick"
+
+        $escalateUri = "$($global:DELINEA_API_BASE.TrimEnd('/'))/PrivilegeElevationCommand/AddAssignment"
+
         $headers = @{
-            'Content-Type'      = 'application/json'
-            'Authorization'     = $token
-            'X-CFY-CHALLENGEID' = [guid]::NewGuid().ToString()
+            Authorization  = $authHeader
+            'Content-Type' = 'application/json'
         }
-        
-        # For privilege escalation, we need to pass the app key and duration
-        # If Delinea supports direct escalation endpoint, use that; otherwise use HandleAppClick
-        $escalateBody = @{
-            user            = $targetUser
-            durationSeconds = $durationSeconds
-            requestType     = "privilege_escalation"
-        } | ConvertTo-Json -Compress
-        
-        Write-Host "Invoking Delinea Privilege Escalation for user: $targetUser (duration: $durationSeconds seconds)" -ForegroundColor Cyan
-        $resp = Invoke-RestMethod -Uri $escalateUri -Method Post -Body $escalateBody -Headers $headers -ErrorAction Stop
-        
-        Write-Host "Delinea privilege escalation response: $($resp | ConvertTo-Json)" -ForegroundColor Cyan
-        Log 'info' "Delinea privilege escalation success" @{ user = $targetUser; duration = $durationSeconds; resp = $resp } | Out-Null
+
+        # TODO: map your Zoho / system model to Delinea PE fields.
+        # You will fill these IDs from configuration / mapping:
+        $nowUtc   = (Get-Date).ToUniversalTime()
+        $expires  = $nowUtc.AddSeconds($durationSeconds)
+
+        $assignment = @{
+            # These names must be aligned with your tenant's API documentation.
+            # Typical fields (names may differ by version):
+            # CommandId     = '<PE command ID>'
+            # PrincipalType = 'User'
+            # PrincipalName = $targetUser  # or PrincipalId if you already resolved it
+            # ScopeType     = 'System'
+            # ScopeId       = '<system-id>'
+            # Starts        = $nowUtc.ToString('o')
+            # Expires       = $expires.ToString('o')
+        }
+
+        # Fail fast if you haven't wired this up yet:
+        if ($assignment.Count -eq 0) {
+            throw "PrivilegeElevationCommand/AddAssignment body not configured. Fill in CommandId / Principal / Scope etc."
+        }
+
+        $bodyJson = $assignment | ConvertTo-Json -Depth 5
+
+        Write-Host "Invoking Delinea Privilege Elevation for '$targetUser' for $durationSeconds seconds" -ForegroundColor Cyan
+
+        $resp = Invoke-RestMethod -Uri $escalateUri -Method Post -Headers $headers -Body $bodyJson -ErrorAction Stop
+
+        Log 'info' "Delinea privilege escalation success" @{
+            user     = $targetUser
+            duration = $durationSeconds
+            resp     = $resp
+        } | Out-Null
+
         return @{ success = $true; resp = $resp }
     }
     catch {
-        # Handle common success cases (409 Conflict = already escalated)
         $err = $_.Exception
-        if ($err -and $err.Response -and $err.Response.StatusCode -eq 409) {
-            Log 'info' "Delinea privilege escalation already active (treated as success)" @{ user = $targetUser; duration = $durationSeconds } | Out-Null
-            return @{ success = $true; info = "already-escalated" }
+
+        # Example: if your tenant returns 409 for "already has assignment"
+        if ($err -and $err.Response -and $err.Response.StatusCode.value__ -eq 409) {
+            Log 'info' "Delinea privilege escalation already active" @{
+                user     = $targetUser
+                duration = $durationSeconds
+            } | Out-Null
+            return @{ success = $true; info = 'already-escalated' }
         }
+
         Write-Host "Delinea privilege escalation error: $($err.Message)" -ForegroundColor Red
-        Log 'error' "Delinea privilege escalation failed" @{ user = $targetUser; duration = $durationSeconds; error = $err.Message } | Out-Null
+        Log 'error' "Delinea privilege escalation failed" @{
+            user     = $targetUser
+            duration = $durationSeconds
+            error    = $err.Message
+        } | Out-Null
+
         return @{ success = $false; error = $err.Message }
     }
 }
