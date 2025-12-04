@@ -1,12 +1,3 @@
-# webhook.ps1
-# Main webhook service for Zoho Sprints -> Delinea Secret Server integration.
-# Features:
-# - HTTP listener (port from $env:PORT; default 8090)
-# - HMAC verification (X-Zoho-Signature) with HMAC_REQUIRED toggle
-# - approval detection (configurable regex)
-# - grants persistence (grants.jsonl) and revoke worker (auto TTL revoke)
-# - Delinea & Zoho token handling (uses env values / mock endpoints)
-
 # ----------------------
 # Utility / config
 # ----------------------
@@ -16,7 +7,8 @@ Set-StrictMode -Version Latest
 $portValue = 8090
 if ($env:PORT -and [int]::TryParse($env:PORT, [ref]$portValue)) {
     $global:PORT = $portValue
-} else {
+}
+else {
     $global:PORT = 8090
 }
 $global:HMAC_SECRET = $env:HMAC_SECRET
@@ -37,7 +29,8 @@ function Redact-ForLog {
     param($obj)
     try {
         $s = $obj | ConvertTo-Json -Depth 6 -Compress
-    } catch {
+    }
+    catch {
         $s = $obj.ToString()
     }
     # naive redaction rules
@@ -46,12 +39,12 @@ function Redact-ForLog {
     return $s
 }
 function Log {
-    param([Parameter(Mandatory=$true)]$Level, [Parameter(Mandatory=$true)]$Message, $Data = $null)
+    param([Parameter(Mandatory = $true)]$Level, [Parameter(Mandatory = $true)]$Message, $Data = $null)
     $entry = @{
         timestamp = (Get-Date).ToString("o")
-        level = $Level
-        message = $Message
-        data = $Data
+        level     = $Level
+        message   = $Message
+        data      = $Data
     }
     Write-Output (Redact-ForLog $entry)
 }
@@ -95,10 +88,10 @@ function Mark-GrantRevoked {
     param($workitemId, $user, $role, $revokedAt, $reason)
     # Append a revocation record (simple append-only audit).
     $rec = @{
-        workitemId = $workitemId
-        user = $user
-        role = $role
-        revokedAt = $revokedAt
+        workitemId   = $workitemId
+        user         = $user
+        role         = $role
+        revokedAt    = $revokedAt
         revokeReason = $reason
     }
     Append-GrantRecord $rec
@@ -130,9 +123,9 @@ function Get-DelineaToken {
         # Step 1: Start authentication challenge
         $challengeUri = "$global:DELINEA_API_BASE/Security/StartChallenge"
         $challengeBody = @{
-            TenantId = ""
-            User = $global:DELINEA_CLIENT_ID
-            Version = "1.0"
+            TenantId             = ""
+            User                 = $global:DELINEA_CLIENT_ID
+            Version              = "1.0"
             AssociatedEntityType = "API"
             AssociatedEntityName = "CookieJar"
         } | ConvertTo-Json -Compress
@@ -155,11 +148,11 @@ function Get-DelineaToken {
                 
                 $advanceUri = "$global:DELINEA_API_BASE/Security/AdvanceAuthentication"
                 $advanceBody = @{
-                    TenantId = $challengeResp.Result.TenantId
-                    SessionId = $sessionId
+                    TenantId    = $challengeResp.Result.TenantId
+                    SessionId   = $sessionId
                     MechanismId = $mechanismId
-                    Answer = $global:DELINEA_CLIENT_SECRET
-                    Action = "Answer"
+                    Answer      = $global:DELINEA_CLIENT_SECRET
+                    Action      = "Answer"
                 } | ConvertTo-Json -Compress
                 
                 $advanceResp = Invoke-RestMethod -Uri $advanceUri -Method Post -Body $advanceBody -Headers @{ 'Content-Type' = 'application/json' } -ErrorAction Stop
@@ -174,7 +167,8 @@ function Get-DelineaToken {
         
         Log 'error' "Delinea authentication did not return valid token" @{ challengeResp = $challengeResp } | Out-Null
         return $null
-    } catch {
+    }
+    catch {
         Log 'error' "Failed to authenticate with Delinea" @{ error = $_.Exception.Message } | Out-Null
         return $null
     }
@@ -198,7 +192,8 @@ function Post-ZohoComment {
         $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body -Headers $headers -ErrorAction Stop
         Log 'info' "Posted comment to Zoho" @{ ticketId = $ticketId; resp = $resp } | Out-Null
         return $true
-    } catch {
+    }
+    catch {
         Log 'error' "Failed to post comment to Zoho" @{ ticketId = $ticketId; error = $_.Exception.Message } | Out-Null
         return $false
     }
@@ -231,17 +226,17 @@ function Invoke-DelineaPrivilegeEscalation {
         # The endpoint escalates the user's privilege level for the specified duration
         $escalateUri = "$global:DELINEA_API_BASE/uprest/HandleAppClick"
         $headers = @{
-            'Content-Type' = 'application/json'
-            'Authorization' = $token
+            'Content-Type'      = 'application/json'
+            'Authorization'     = $token
             'X-CFY-CHALLENGEID' = [guid]::NewGuid().ToString()
         }
         
         # For privilege escalation, we need to pass the app key and duration
         # If Delinea supports direct escalation endpoint, use that; otherwise use HandleAppClick
         $escalateBody = @{
-            user = $targetUser
+            user            = $targetUser
             durationSeconds = $durationSeconds
-            requestType = "privilege_escalation"
+            requestType     = "privilege_escalation"
         } | ConvertTo-Json -Compress
         
         Write-Host "Invoking Delinea Privilege Escalation for user: $targetUser (duration: $durationSeconds seconds)" -ForegroundColor Cyan
@@ -250,7 +245,8 @@ function Invoke-DelineaPrivilegeEscalation {
         Write-Host "Delinea privilege escalation response: $($resp | ConvertTo-Json)" -ForegroundColor Cyan
         Log 'info' "Delinea privilege escalation success" @{ user = $targetUser; duration = $durationSeconds; resp = $resp } | Out-Null
         return @{ success = $true; resp = $resp }
-    } catch {
+    }
+    catch {
         # Handle common success cases (409 Conflict = already escalated)
         $err = $_.Exception
         if ($err -and $err.Response -and $err.Response.StatusCode -eq 409) {
@@ -283,12 +279,12 @@ function Invoke-DelineaPrivilegeRevoke {
         # Call privilege revocation endpoint
         $revokeUri = "$global:DELINEA_API_BASE/uprest/HandleAppClick?action=revoke"
         $headers = @{
-            'Content-Type' = 'application/json'
+            'Content-Type'  = 'application/json'
             'Authorization' = $token
         }
         
         $revokeBody = @{
-            user = $targetUser
+            user   = $targetUser
             action = "revoke"
         } | ConvertTo-Json -Compress
         
@@ -297,7 +293,8 @@ function Invoke-DelineaPrivilegeRevoke {
         
         Log 'info' "Delinea privilege revocation success" @{ user = $targetUser; resp = $resp } | Out-Null
         return @{ success = $true; resp = $resp }
-    } catch {
+    }
+    catch {
         # If privilege wasn't active (404 / not found) treat as success
         $err = $_.Exception
         if ($err -and $err.Response -and $err.Response.StatusCode -eq 404) {
@@ -331,19 +328,20 @@ function Extract-ChangeReleaseFields {
     param($ticket)
     # Returns a hashtable: server, duration (string), durationSeconds, targetUser, assigneeEmail
     $res = @{
-        server = $null
-        duration = $null
+        server          = $null
+        duration        = $null
         durationSeconds = $null
-        targetUser = $null
-        assigneeEmail = $null
-        workitemId = $null
+        targetUser      = $null
+        assigneeEmail   = $null
+        workitemId      = $null
     }
     if ($ticket) {
         # Handle both hashtable and PSCustomObject from JSON conversion
         $ticketId = $null
         if ($ticket -is [System.Collections.IDictionary]) {
             $ticketId = $ticket['id']
-        } elseif ($ticket.PSObject.Properties.Name -contains 'id') {
+        }
+        elseif ($ticket.PSObject.Properties.Name -contains 'id') {
             $ticketId = $ticket.id
         }
         if ($ticketId) { $res.workitemId = $ticketId }
@@ -369,7 +367,8 @@ function Extract-ChangeReleaseFields {
         if ($res.duration) {
             $parsed = Parse-DurationToSeconds -durationStr $res.duration
             $res.durationSeconds = $parsed
-        } else {
+        }
+        else {
             # default to 4 hours if unspecified
             $res.durationSeconds = 4 * 3600
         }
@@ -386,7 +385,7 @@ function Parse-DurationToSeconds {
         $h = if ($matches[1]) { [int]$matches[1] } else { 0 }
         $m = if ($matches[2]) { [int]$matches[2] } else { 0 }
         $sec = if ($matches[3]) { [int]$matches[3] } else { 0 }
-        return ($h*3600 + $m*60 + $sec)
+        return ($h * 3600 + $m * 60 + $sec)
     }
     if ($s -match '^(\d+)\s*d') { return [int]$matches[1] * 24 * 3600 }
     if ($s -match '^(\d+)\s*h') { return [int]$matches[1] * 3600 }
@@ -396,7 +395,8 @@ function Parse-DurationToSeconds {
     try {
         $ts = [System.Xml.XmlConvert]::ToTimeSpan($s)  # supports PT.. as well
         return [int]$ts.TotalSeconds
-    } catch {
+    }
+    catch {
         # fallback default 4 hours
         return 4 * 3600
     }
@@ -453,11 +453,11 @@ function Handle-GrantAccess {
     $expiresAt = (Get-Date).ToUniversalTime().AddSeconds($fields.durationSeconds).ToString("o")
     $rec = @{
         workitemId = $workitemId
-        user = $target
-        role = $role
-        grantedAt = $grantedAt
-        expiresAt = $expiresAt
-        revokedAt = $null
+        user       = $target
+        role       = $role
+        grantedAt  = $grantedAt
+        expiresAt  = $expiresAt
+        revokedAt  = $null
     }
     Append-GrantRecord $rec
 
@@ -523,13 +523,15 @@ function Start-RevokeWorker {
                                 Mark-GrantRevoked -workitemId $r.workitemId -user $r.user -role $r.role -revokedAt $revokedAt -reason "ttl-expired"
                                 # Post comment to Zoho to inform ticket
                                 Post-ZohoComment -ticketId $r.workitemId -commentText "Access automatically REVOKED (TTL expired) for $($r.user) on role $($r.role). Expired at $($r.expiresAt) (UTC)."
-                            } else {
+                            }
+                            else {
                                 Log 'error' "RevokeWorker: failed to revoke expired grant" @{ workitemId = $r.workitemId; user = $r.user; role = $r.role; error = $rev.error }
                             }
                         }
                     }
                 }
-            } catch {
+            }
+            catch {
                 Log 'error' "RevokeWorker exception" $_.Exception.Message
             }
             Start-Sleep -Seconds $intervalSeconds
@@ -543,7 +545,8 @@ function Start-RevokeWorker {
             Start-ThreadJob -ArgumentList $global:REVOKE_WORKER_INTERVAL_SECONDS, $global:GRANTS_STORE -ScriptBlock $script | Out-Null
             Log 'info' "Started RevokeWorker using Start-ThreadJob" @{ intervalSeconds = $global:REVOKE_WORKER_INTERVAL_SECONDS }
             return
-        } catch {
+        }
+        catch {
             Log 'warn' "Failed to start ThreadJob for RevokeWorker; will run inline" $_.Exception.Message
         }
     }
@@ -553,12 +556,13 @@ function Start-RevokeWorker {
         Start-Job -ArgumentList $global:REVOKE_WORKER_INTERVAL_SECONDS, $global:GRANTS_STORE -ScriptBlock $script | Out-Null
         Log 'info' "Started RevokeWorker using Start-Job (background process)" @{ intervalSeconds = $global:REVOKE_WORKER_INTERVAL_SECONDS }
         return
-    } catch {
+    }
+    catch {
         Log 'warn' "Failed to start background job for RevokeWorker; running in-process (blocking) - not ideal for production." $_.Exception.Message
         # last fallback: run in runspace (non-blocking is hard) - run in a separate thread using .NET Thread
         $thread = [System.Threading.Thread]::new({
-            & $script $global:REVOKE_WORKER_INTERVAL_SECONDS $global:GRANTS_STORE
-        })
+                & $script $global:REVOKE_WORKER_INTERVAL_SECONDS $global:GRANTS_STORE
+            })
         $thread.IsBackground = $true
         $thread.Start()
         Log 'info' "Started RevokeWorker on raw .NET thread (fallback)"
@@ -575,7 +579,8 @@ function Start-Listener {
     $listener.Prefixes.Add($prefix)
     try {
         $listener.Start()
-    } catch {
+    }
+    catch {
         Log 'error' "Failed to start listener - maybe port in use or insufficient privileges" $_.Exception.Message
         throw
     }
@@ -612,7 +617,8 @@ function Start-Listener {
                     if ($hmacRequired) {
                         Write-Host "HMAC validation failed: Invalid signature" -ForegroundColor Yellow
                         return @{ status = 401; body = "Invalid signature" }
-                    } else {
+                    }
+                    else {
                         Write-Host "HMAC validation: Signature mismatch but HMAC_REQUIRED=false, continuing" -ForegroundColor Yellow
                     }
                 }
@@ -650,7 +656,8 @@ function Start-Listener {
                 if ($approvalRegex) {
                     $regex = [regex]::new($approvalRegex, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
                     $isApproval = $regex.IsMatch($text)
-                } else {
+                }
+                else {
                     $isApproval = $false
                 }
                 $isApprover = $false
@@ -663,36 +670,43 @@ function Start-Listener {
                     try {
                         Handle-GrantAccess -ticket $payload.ticket -comment $comment
                         Write-Host "Grant access processed successfully" -ForegroundColor Green
-                    } catch {
+                    }
+                    catch {
                         Write-Host "Grant access error: $($_.Exception.Message)" -ForegroundColor Red
                         throw
                     }
-                } else {
+                }
+                else {
                     Write-Host "Comment not an approval or author not approver; ignoring" -ForegroundColor Yellow
                 }
 
                 return @{ status = 200; body = "ok" }
-            } elseif ($evt -eq 'workitem.updated' -or $evt -eq 'ticket.updated' -or $evt -eq 'workitem.state_changed') {
+            }
+            elseif ($evt -eq 'workitem.updated' -or $evt -eq 'ticket.updated' -or $evt -eq 'workitem.state_changed') {
                 # if the workitem status is in closed states, trigger revoke
                 $status = $payload.ticket.status -as [string]
-                $closedStates = @('Done','Closed','Completed','Resolved')
+                $closedStates = @('Done', 'Closed', 'Completed', 'Resolved')
                 if ($status -and $closedStates -contains $status) {
                     try {
                         Handle-Revoke -ticket $payload.ticket
                         Write-Host "Revoke processed successfully" -ForegroundColor Green
-                    } catch {
+                    }
+                    catch {
                         Write-Host "Revoke error: $($_.Exception.Message)" -ForegroundColor Red
                         throw
                     }
-                } else {
+                }
+                else {
                     Write-Host "Workitem updated but not closing; ignoring" -ForegroundColor Yellow
                 }
                 return @{ status = 200; body = "ok" }
-            } else {
+            }
+            else {
                 Write-Host "Unhandled event type: $evt" -ForegroundColor Yellow
                 return @{ status = 200; body = "ignored" }
             }
-        } catch {
+        }
+        catch {
             Write-Host "Handler error: $($_.Exception.Message)" -ForegroundColor Red
             return @{ status = 500; body = "handler-error" }
         }
@@ -714,18 +728,18 @@ function Start-Listener {
 
             # Build a lightweight PSCustomObject to pass to handler (serializable)
             $requestObj = [PSCustomObject]@{
-                HttpMethod = $req.HttpMethod
-                RawUrl = $req.RawUrl
+                HttpMethod     = $req.HttpMethod
+                RawUrl         = $req.RawUrl
                 RemoteEndPoint = $req.RemoteEndPoint.ToString()
-                Headers = $headers
-                Body = $body
+                Headers        = $headers
+                Body           = $body
             }
 
             # Create globals object to pass to handler
             $globalVars = [PSCustomObject]@{
-                HMAC_REQUIRED = $global:HMAC_REQUIRED
-                HMAC_SECRET = $global:HMAC_SECRET
-                APPROVAL_REGEX = $global:APPROVAL_REGEX
+                HMAC_REQUIRED    = $global:HMAC_REQUIRED
+                HMAC_SECRET      = $global:HMAC_SECRET
+                APPROVAL_REGEX   = $global:APPROVAL_REGEX
                 SENIOR_APPROVERS = $global:SENIOR_APPROVERS
             }
 
@@ -741,11 +755,29 @@ function Start-Listener {
                 $ctx.Response.OutputStream.Write($buffer, 0, $buffer.Length)
                 $ctx.Response.StatusCode = 202
                 $ctx.Response.OutputStream.Close()
-            } else {
+            }
+            else {
                 # Inline handling (process synchronously)
-                $result = & $handlerScript $requestObj $globalVars
-                $respBody = $result.body
-                $status = if ($result.status) { $result.status } else { 200 }
+                try {
+                    $result = & $handlerScript $requestObj $globalVars
+                }
+                catch {
+                    Log 'error' "Handler script failed" $_.Exception.Message | Out-Null
+                    $result = @{ status = 500; body = "handler-error" }
+                }
+                
+                # Safely extract response values with defaults
+                $respBody = "ok"
+                $status = 200
+                if ($result -is [hashtable]) {
+                    if ($result.ContainsKey('body')) { $respBody = $result['body'] }
+                    if ($result.ContainsKey('status')) { $status = $result['status'] }
+                }
+                elseif ($result -is [System.Management.Automation.PSCustomObject]) {
+                    if ($result.PSObject.Properties.Name -contains 'body') { $respBody = $result.body }
+                    if ($result.PSObject.Properties.Name -contains 'status') { $status = $result.status }
+                }
+                
                 $bytes = [System.Text.Encoding]::UTF8.GetBytes($respBody)
                 $ctx.Response.ContentType = "text/plain"
                 $ctx.Response.ContentLength64 = $bytes.Length
@@ -754,8 +786,20 @@ function Start-Listener {
                 $ctx.Response.OutputStream.Close()
             }
 
-        } catch {
-            Log 'error' "Listener exception" $_.Exception.Message
+        }
+        catch {
+            Log 'error' "Listener exception" @{ error = $_.Exception.Message; line = $_.InvocationInfo.ScriptLineNumber } | Out-Null
+            try {
+                $ctx.Response.StatusCode = 500
+                $error_response = "Internal server error"
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($error_response)
+                $ctx.Response.ContentLength64 = $bytes.Length
+                $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $ctx.Response.OutputStream.Close()
+            }
+            catch {
+                # If response fails, silently continue
+            }
         }
     }
 }
