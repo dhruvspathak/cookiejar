@@ -150,10 +150,10 @@ function Get-DelineaToken {
         Write-Host "Requesting Delinea OAuth2 token from $tokenUri" -ForegroundColor Cyan
 
         $resp = Invoke-RestMethod -Uri $tokenUri `
-                                  -Method Post `
-                                  -Body $body `
-                                  -ContentType 'application/x-www-form-urlencoded' `
-                                  -ErrorAction Stop
+            -Method Post `
+            -Body $body `
+            -ContentType 'application/x-www-form-urlencoded' `
+            -ErrorAction Stop
 
         if (-not $resp.access_token) {
             Log 'error' "Delinea token response did not contain access_token" @{
@@ -252,8 +252,8 @@ function Invoke-DelineaPrivilegeEscalation {
 
         # TODO: map your Zoho / system model to Delinea PE fields.
         # You will fill these IDs from configuration / mapping:
-        $nowUtc   = (Get-Date).ToUniversalTime()
-        $expires  = $nowUtc.AddSeconds($durationSeconds)
+        $nowUtc = (Get-Date).ToUniversalTime()
+        $expires = $nowUtc.AddSeconds($durationSeconds)
 
         $assignment = @{
             # These names must be aligned with your tenant's API documentation.
